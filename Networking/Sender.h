@@ -45,6 +45,8 @@ public:
 
     void request(const octetStream& os);
     void wait(const octetStream& os);
+    /* karuta-voting M2: as Receiver::wait_until */
+    int wait_until(const octetStream& os, const timespec& deadline);
 };
 
 #endif /* NETWORKING_SENDER_H_ */

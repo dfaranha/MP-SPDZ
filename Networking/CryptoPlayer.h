@@ -30,7 +30,15 @@ class CryptoPlayer : public MultiPlayer<ssl_socket*>
 
     void connect(int other, vector<int>* plaintext_sockets);
 
+    /* karuta-voting M3: peers absent at setup (PlainPlayer::setup_timeout) */
+    vector<char> absent;
+
 public:
+    bool is_absent(int other) const
+    {
+        return absent.at(other);
+    }
+
     /**
      * Start a new set of encrypted connections.
      * @param Nms network setup
@@ -56,6 +64,15 @@ public:
 
     void pass_around_no_stats(const octetStream& to_send, octetStream& to_receive,
         int offset) const;
+
+    /* karuta-voting M2: send to_send[j] to and receive to_receive[j] from each
+     * j with live[j], waiting until `timeout` seconds from the call. A peer
+     * whose send or receive is not done by then, or whose connection fails,
+     * gets live[j] = 0; its two octetStreams are still referenced by the
+     * communication threads and must never be freed or used again. */
+    void send_receive_live(const vector<octetStream*>& to_send,
+            const vector<octetStream*>& to_receive, vector<char>& live,
+            double timeout) const;
 
     void send_receive_all_no_stats(const vector<vector<bool>>& channels,
             const vector<octetStream>& to_send,

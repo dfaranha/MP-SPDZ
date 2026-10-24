@@ -56,6 +56,10 @@ public:
 
     void request(octetStream& os);
     void wait(octetStream& os);
+    /* karuta-voting M2: 1 if os was received by the deadline, 0 if not (the
+     * request stays pending: os must outlive the thread), -1 if the
+     * connection failed */
+    int wait_until(octetStream& os, const timespec& deadline);
 };
 
 #endif /* NETWORKING_RECEIVER_H_ */

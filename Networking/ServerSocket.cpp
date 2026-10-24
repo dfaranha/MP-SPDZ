@@ -35,6 +35,7 @@ ServerSocket::ServerSocket(int Portnum) : portnum(Portnum), thread(0)
 
   main_socket = socket(AF_INET, SOCK_STREAM, 0);
   if (main_socket<0) { error("set_up_socket:socket"); }
+  set_socket_buffers(main_socket); /* karuta-voting M4 */
 
   int one=1;
   int fl=setsockopt(main_socket,SOL_SOCKET,SO_REUSEADDR,(char*)&one,sizeof(int));
@@ -211,6 +212,28 @@ int ServerSocket::get_connection_socket(const string& id)
                   "for details on networking.");
   }
 
+  int client_socket = clients[id];
+  used.insert(id);
+  data_signal.unlock();
+  return client_socket;
+}
+
+int ServerSocket::get_connection_socket(const string& id,
+    const timespec& deadline)
+{
+  data_signal.lock();
+  while (clients.find(id) == clients.end())
+  {
+      timespec now;
+      clock_gettime(CLOCK_REALTIME, &now);
+      if (now.tv_sec > deadline.tv_sec or (now.tv_sec == deadline.tv_sec
+              and now.tv_nsec >= deadline.tv_nsec))
+        {
+          data_signal.unlock();
+          return -1;
+        }
+      data_signal.wait(1);
+  }
   int client_socket = clients[id];
   used.insert(id);
   data_signal.unlock();

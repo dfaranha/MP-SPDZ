@@ -71,12 +71,49 @@ CryptoPlayer::CryptoPlayer(const Names& Nms, const string& id_base) :
         player.sockets.clear();
     }
 
-    for (auto& other : balanced_others())
-        connect(other, plaintext_sockets);
-
+    /* karuta-voting M3: no TLS and no communication threads for a peer that
+     * is absent on either plaintext connection */
+    absent.assign(num_players(), 0);
     for (int i = 0; i < num_players(); i++)
     {
         if (i == my_num())
+            continue;
+        absent[i] = plaintext_sockets[0][i] < 0 or plaintext_sockets[1][i] < 0;
+        if (absent[i])
+            for (int j = 0; j < 2; j++)
+                if (plaintext_sockets[j][i] >= 0)
+                    close_client_socket(plaintext_sockets[j][i]);
+    }
+
+    for (auto& other : balanced_others())
+        if (not absent[other])
+        {
+            if (PlainPlayer::setup_timeout <= 0)
+            {
+                connect(other, plaintext_sockets);
+                continue;
+            }
+            /* karuta-voting M3: a failed handshake makes the peer absent */
+            ssl_socket::tolerant = true;
+            try
+            {
+                connect(other, plaintext_sockets);
+            }
+            catch (exception& e)
+            {
+                cerr << "P" << my_num() << ": TLS setup with P" << other
+                        << " failed (" << e.what() << "); treating it as absent"
+                        << endl;
+                delete sockets[other];
+                sockets[other] = 0;
+                absent[other] = 1;
+            }
+            ssl_socket::tolerant = false;
+        }
+
+    for (int i = 0; i < num_players(); i++)
+    {
+        if (i == my_num() or absent[i])
         {
             sockets[i] = 0;
             senders[i] = 0;
@@ -224,6 +261,35 @@ void CryptoPlayer::send_receive_all_no_stats(const vector<vector<bool>>& channel
             this->senders[other]->wait(to_send[other]);
         if (receive)
             this->receivers[other]->wait(to_receive[other]);
+    }
+}
+
+void CryptoPlayer::send_receive_live(const vector<octetStream*>& to_send,
+        const vector<octetStream*>& to_receive, vector<char>& live,
+        double timeout) const
+{
+    timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    long ns = deadline.tv_nsec + long((timeout - long(timeout)) * 1e9);
+    deadline.tv_sec += long(timeout) + ns / 1000000000L;
+    deadline.tv_nsec = ns % 1000000000L;
+    for (int offset = 1; offset < num_players(); offset++)
+    {
+        int other = get_player(offset);
+        if (not live[other])
+            continue;
+        senders[other]->request(*to_send[other]);
+        receivers[other]->request(*to_receive[other]);
+        sent += to_send[other]->get_length();
+    }
+    for (int offset = 1; offset < num_players(); offset++)
+    {
+        int other = get_player(offset);
+        if (not live[other])
+            continue;
+        if (senders[other]->wait_until(*to_send[other], deadline) != 1
+                or receivers[other]->wait_until(*to_receive[other], deadline) != 1)
+            live[other] = 0;
     }
 }
 

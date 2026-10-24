@@ -109,6 +109,15 @@ void Receiver<T>::wait(octetStream& os)
 }
 
 template<class T>
+int Receiver<T>::wait_until(octetStream& os, const timespec& deadline)
+{
+    octetStream* queued = 0;
+    if (not out.pop_until(queued, deadline))
+        return 0;
+    return queued == &os ? 1 : -1;
+}
+
+template<class T>
 void Receiver<T>::fail()
 {
     out.push(0);

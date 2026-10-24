@@ -260,7 +260,8 @@ PlainPlayer::~PlainPlayer()
     {
       /* Close down the sockets */
       for (auto socket : sockets)
-        close_client_socket(socket);
+        if (socket >= 0)
+          close_client_socket(socket);
       close_client_socket(send_to_self_socket);
     }
 }
@@ -294,9 +295,71 @@ PlayerBase::~PlayerBase()
 // Set up nmachines client and server sockets to send data back and fro
 //   A machine is a server between it and player i if i>=my_number
 //   Can also communicate with myself, but only with send_to and receive_from
+double PlainPlayer::setup_timeout = 0;
+
+/* karuta-voting M3: connect to all lower-numbered peers in rounds of short
+ * attempts and wait for the higher-numbered ones, all until one deadline, so
+ * that an absent peer delays no one past it; absent peers get socket -1. */
+void PlainPlayer::setup_sockets_tolerant(const vector<string>& names,
+        const vector<int>& ports, const string& id_base, ServerSocket& server)
+{
+    timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += long(setup_timeout);
+    auto before = [&]() {
+        timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        return now.tv_sec < deadline.tv_sec or (now.tv_sec == deadline.tv_sec
+                and now.tv_nsec < deadline.tv_nsec);
+    };
+    auto pn = id_base + "P" + to_string(player_no);
+    sockets.assign(nplayers, -1);
+    set_up_client_socket(sockets[player_no], "127.0.0.1", ports[player_no]);
+    octetStream(pn).Send(sockets[player_no]);
+    send_to_self_socket = sockets[player_no];
+    vector<int> pending;
+    for (int i = 0; i < player_no; i++)
+        pending.push_back(i);
+    while (not pending.empty() and before())
+    {
+        vector<int> still;
+        for (int i : pending)
+        {
+            int s;
+            if (try_client_socket(s, names[i].c_str(), ports[i], 1000))
+            {
+                sockets[i] = s;
+                octetStream(pn).Send(s);
+            }
+            else
+                still.push_back(i);
+        }
+        pending.swap(still);
+        if (not pending.empty())
+            usleep(100000);
+    }
+    for (int i = player_no; i < nplayers; i++)
+        sockets[i] = server.get_connection_socket(id_base + "P" + to_string(i),
+                deadline);
+    for (int i = 0; i < nplayers; i++)
+    {
+        if (sockets[i] < 0)
+            continue;
+        struct timeval tv;
+        tv.tv_sec = 300;
+        tv.tv_usec = 0;
+        setsockopt(sockets[i], SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv));
+    }
+}
+
 void PlainPlayer::setup_sockets(const vector<string>& names,
         const vector<int>& ports, const string& id_base, ServerSocket& server)
 {
+    if (setup_timeout > 0)
+    {
+        setup_sockets_tolerant(names, ports, id_base, server);
+        return;
+    }
     if (OnlineOptions::singleton.has_option("debug_connection_id"))
         cerr << "Setting up connection " << id_base << endl;
 

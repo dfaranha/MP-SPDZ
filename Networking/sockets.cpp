@@ -1,11 +1,28 @@
 
 #include "sockets.h"
+#include <poll.h>
 #include "Tools/Exceptions.h"
 #include "Tools/time-func.h"
 #include "Processor/OnlineOptions.h"
 
 #include <iostream>
 #include <fcntl.h>
+
+/* karuta-voting M4: KARUTA_SOCKBUF=<bytes> fixes the send and receive buffers of the
+ * players' sockets, set before connecting or listening so that the window
+ * scale is negotiated for them (the kernel caps them at net.core.*mem_max) */
+void set_socket_buffers(int socket)
+{
+  const char* env = getenv("KARUTA_SOCKBUF");
+  if (env == 0)
+    return;
+  int size = atoi(env);
+  if (size <= 0)
+    return;
+  if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size)) < 0
+      or setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size)) < 0)
+    error("set_socket_buffers:setsockopt");
+}
 using namespace std;
 
 void error(const char *str, bool interrupted, size_t length)
@@ -89,6 +106,7 @@ void set_up_client_socket(int& mysocket,const char* hostname,int Portnum)
        mysocket = socket(AF_INET, SOCK_STREAM, 0);
        if (mysocket < 0)
          error("set_up_socket:socket");
+       set_socket_buffers(mysocket); /* karuta-voting M4 */
 
        fl = connect(mysocket, addr, len);
        connect_errno = errno;
@@ -187,6 +205,48 @@ void set_up_client_socket(int& mysocket,const char* hostname,int Portnum)
   if (fl < 0)
     error("set non-blocking on client");
 #endif
+}
+
+bool try_client_socket(int& mysocket, const char* hostname, int Portnum,
+    int timeout_ms)
+{
+  struct addrinfo hints, *ai = NULL;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  if (getaddrinfo(hostname, NULL, &hints, &ai) != 0 or ai == NULL)
+    return false;
+  sockaddr_in addr = *(sockaddr_in*) ai->ai_addr;
+  freeaddrinfo(ai);
+  addr.sin_port = htons(Portnum);
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  if (s < 0)
+    return false;
+  set_socket_buffers(s); /* karuta-voting M4 */
+  int flags = fcntl(s, F_GETFL, 0);
+  fcntl(s, F_SETFL, flags | O_NONBLOCK);
+  int fl = connect(s, (sockaddr*) &addr, sizeof(addr));
+  if (fl != 0 and errno == EINPROGRESS)
+    {
+      pollfd pfd = { s, POLLOUT, 0 };
+      if (poll(&pfd, 1, timeout_ms) == 1)
+        {
+          int err = 0;
+          socklen_t len = sizeof(err);
+          getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &len);
+          fl = err ? -1 : 0;
+        }
+    }
+  if (fl != 0)
+    {
+      close(s);
+      return false;
+    }
+  fcntl(s, F_SETFL, flags);
+  int one = 1;
+  setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*) &one, sizeof(int));
+  mysocket = s;
+  return true;
 }
 
 void close_client_socket(int socket)

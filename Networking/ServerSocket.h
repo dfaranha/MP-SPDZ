@@ -51,6 +51,8 @@ public:
     // This depends on clients sending their id.
     // Has to be thread-safe.
     int get_connection_socket(const string& id);
+    // karuta-voting M3: as above, or -1 if id has not connected by the deadline
+    int get_connection_socket(const string& id, const timespec& deadline);
 };
 
 /*

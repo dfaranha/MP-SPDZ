@@ -46,6 +46,10 @@ class ssl_socket : public boost::asio::ssl::stream<boost::asio::ip::tcp::socket>
     typedef boost::asio::ssl::stream<boost::asio::ip::tcp::socket> parent;
 
 public:
+    /* karuta-voting M3: if set, a failed handshake only throws, so that the
+     * caller can treat the peer as absent, instead of ending the process */
+    static inline bool tolerant = false;
+
     ssl_socket(ssl_service& io_service,
             boost::asio::ssl::context& ctx, int plaintext_socket, string other,
             string me, bool client) :
@@ -64,7 +68,8 @@ public:
                 handshake(ssl_socket::client);
             } catch (exception& e)
             {
-                ssl_error("Client", other, me, e);
+                if (not tolerant)
+                    ssl_error("Client", other, me, e);
                 throw;
             }
         else
@@ -74,7 +79,8 @@ public:
                 handshake(ssl_socket::server);
             } catch (exception& e)
             {
-                ssl_error("Server", other, me, e);
+                if (not tolerant)
+                    ssl_error("Server", other, me, e);
                 throw;
             }
 

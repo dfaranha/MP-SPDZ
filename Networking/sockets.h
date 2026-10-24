@@ -29,9 +29,14 @@ using namespace std;
 #endif
 
 void error(const char *str, bool interrupted = false, size_t length = 0);
+void set_socket_buffers(int socket); /* karuta-voting M4 */
 
 void set_up_client_socket(int& mysocket,const char* hostname,int Portnum);
 void close_client_socket(int socket);
+/* karuta-voting M3: one connection attempt, waiting at most timeout_ms;
+ * false if it does not succeed */
+bool try_client_socket(int& mysocket, const char* hostname, int Portnum,
+    int timeout_ms);
 
 // send/receive integers
 template<class T>

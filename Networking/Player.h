@@ -492,10 +492,19 @@ public:
  */
 class PlainPlayer : public MultiPlayer<int>
 {
+  friend class CryptoPlayer;
+
   void setup_sockets(const vector<string>& names, const vector<int>& ports,
       const string& id_base, ServerSocket& server);
+  void setup_sockets_tolerant(const vector<string>& names,
+      const vector<int>& ports, const string& id_base, ServerSocket& server);
 
 public:
+  /* karuta-voting M3: if positive, connection setup waits at most this many
+   * seconds for all peers together; a peer that has not connected by then
+   * gets socket -1 (absent) instead of ending the process */
+  static double setup_timeout;
+
   /**
    * Start a new set of unencrypted connections.
    * @param Nms network setup

@@ -8,6 +8,8 @@
 
 #include <pthread.h>
 #include <deque>
+#include <cerrno>
+#include <ctime>
 using namespace std;
 
 template<class T>
@@ -97,6 +99,24 @@ public:
         }
         unlock();
         return something_for_you;
+    }
+
+    /* karuta-voting M2: pop with an absolute deadline (CLOCK_REALTIME);
+     * false if nothing arrived by then */
+    bool pop_until(T& value, const timespec& deadline)
+    {
+        lock();
+        while (running and queue.size() == 0)
+            if (pthread_cond_timedwait(&cond, &mutex, &deadline) == ETIMEDOUT)
+                break;
+        bool something = queue.size() > 0;
+        if (something)
+        {
+            value = queue.front();
+            queue.pop_front();
+        }
+        unlock();
+        return something;
     }
 
     void stop()

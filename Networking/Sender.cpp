@@ -79,6 +79,15 @@ void Sender<T>::wait(const octetStream& os)
 }
 
 template<class T>
+int Sender<T>::wait_until(const octetStream& os, const timespec& deadline)
+{
+    const octetStream* queued = 0;
+    if (not out.pop_until(queued, deadline))
+        return 0;
+    return queued == &os ? 1 : -1;
+}
+
+template<class T>
 void Sender<T>::fail()
 {
     out.push(0);
