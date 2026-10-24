@@ -13,6 +13,19 @@
 
 #include "mac_key.hpp"
 
+/* karuta-voting M1: number of repetitions of a sacrifice check so that its
+ * soundness error, 1/|F| per repetition with fresh check material and a
+ * fresh challenge, is below 2^-security even when the field is smaller than
+ * the security parameter (q = 2^37 - 571 in karuta-voting). Upstream rejects
+ * such fields for triples (check_field_size) and silently runs one
+ * repetition for squares and bits. */
+template<class U>
+int sacrifice_repetitions()
+{
+    int len = U::length(), sec = OnlineOptions::singleton.security_parameter;
+    return max(1, (sec + len - 1) / len);
+}
+
 template<class T>
 MaliciousBitOnlyRepPrep<T>::MaliciousBitOnlyRepPrep(SubProcessor<T>* proc, DataPositions& usage) :
         BufferPrep<T>(usage),
@@ -76,7 +89,8 @@ template<class T>
 void MaliciousRepPrep<T>::buffer_triples()
 {
     CODE_LOCATION
-    check_field_size<typename T::open_type>();
+    /* karuta-voting M1: repeat the sacrifice instead of check_field_size */
+    const int reps = sacrifice_repetitions<typename T::open_type>();
     auto& triples = this->triples;
     auto buffer_size = BaseMachine::batch_size<T>(DATA_TRIPLE,
             this->buffer_size);
@@ -86,26 +100,40 @@ void MaliciousRepPrep<T>::buffer_triples()
     auto& honest_proc = this->honest_proc;
     assert(honest_proc != 0);
     Player& P = honest_proc->P;
-    vector<array<T, 5>> check_triples;
-    check_triples.reserve(buffer_size);
+    /* rep r checks (a, b, c) against its own (a'_r, c'_r = a'_r b) */
+    vector<vector<array<T, 5>>> check_triples(reps);
+    for (auto& ct : check_triples)
+        ct.reserve(buffer_size);
     auto& honest_prot = honest_proc->protocol;
     honest_prot.init_mul();
-    BufferScope scope(honest_prot, 3 * buffer_size);
+    BufferScope scope(honest_prot, (2 + reps) * buffer_size);
     for (int i = 0; i < buffer_size; i++)
     {
-        check_triples.push_back({});
-        auto& tuple = check_triples.back();
-        for (int j = 0; j < 3; j++)
-            tuple[j] = honest_prot.get_random();
-        honest_prot.prepare_mul(tuple[0], tuple[2]);
-        honest_prot.prepare_mul(tuple[1], tuple[2]);
+        T a = honest_prot.get_random(), b = honest_prot.get_random();
+        honest_prot.prepare_mul(a, b);
+        for (int r = 0; r < reps; r++)
+        {
+            check_triples[r].push_back({});
+            auto& tuple = check_triples[r].back();
+            tuple[0] = a;
+            tuple[1] = honest_prot.get_random();
+            tuple[2] = b;
+            honest_prot.prepare_mul(tuple[1], tuple[2]);
+        }
     }
     honest_prot.exchange();
     for (int i = 0; i < buffer_size; i++)
-        for (int j = 3; j < 5; j++)
-            check_triples[i][j] = honest_prot.finalize_mul();
-    sacrifice<T, typename T::random_type>(check_triples, P);
-    for (auto& tuple : check_triples)
+    {
+        T c = honest_prot.finalize_mul();
+        for (int r = 0; r < reps; r++)
+        {
+            check_triples[r][i][3] = c;
+            check_triples[r][i][4] = honest_prot.finalize_mul();
+        }
+    }
+    for (int r = 0; r < reps; r++)
+        sacrifice<T, typename T::random_type>(check_triples[r], P);
+    for (auto& tuple : check_triples[0])
         triples.push_back({{tuple[0], tuple[2], tuple[3]}});
 }
 
@@ -113,7 +141,8 @@ template<class T, class U>
 void sacrifice(const vector<array<T, 5>>& check_triples, Player& P)
 {
     CODE_LOCATION
-    check_field_size<U>();
+    /* karuta-voting M1: soundness 1/|F| per call; callers repeat it
+     * sacrifice_repetitions times instead of requiring a large field */
     vector<T> masked, checks;
     vector <typename T::open_type> opened;
     typename T::MAC_Check MC;
@@ -156,35 +185,46 @@ void MaliciousRepPrep<T>::buffer_squares()
     assert(honest_proc);
     Player& P = honest_proc->P;
     squares.clear();
-    BufferScope scope(honest_prep, buffer_size);
+    /* karuta-voting M1: repeat with fresh (f, h) and a fresh t */
+    const int reps = sacrifice_repetitions<typename T::clear>();
+    BufferScope scope(honest_prep, (1 + reps) * buffer_size);
     for (int i = 0; i < buffer_size; i++)
     {
         T a, b;
-        T f, h;
         honest_prep.get_two(DATA_SQUARE, a, b);
-        honest_prep.get_two(DATA_SQUARE, f, h);
         squares.push_back({{a, b}});
-        check_squares.push_back({{f, h}});
     }
-    auto t = Create_Random<typename T::clear>(P);
-    for (int i = 0; i < buffer_size; i++)
+    for (int r = 0; r < reps; r++)
     {
-        T& a = squares[i][0];
-        T& f = check_squares[i][0];
-        masked.push_back(a * t - f);
+        check_squares.clear();
+        masked.clear();
+        checks.clear();
+        for (int i = 0; i < buffer_size; i++)
+        {
+            T f, h;
+            honest_prep.get_two(DATA_SQUARE, f, h);
+            check_squares.push_back({{f, h}});
+        }
+        auto t = Create_Random<typename T::clear>(P);
+        for (int i = 0; i < buffer_size; i++)
+        {
+            T& a = squares[i][0];
+            T& f = check_squares[i][0];
+            masked.push_back(a * t - f);
+        }
+        MC.POpen(opened, masked, P);
+        typename T::clear t2 = t * t;
+        for (int i = 0; i < buffer_size; i++)
+        {
+            T& a = squares[i][0];
+            T& b = squares[i][1];
+            T& f = check_squares[i][0];
+            T& h = check_squares[i][1];
+            auto& rho = opened[i];
+            checks.push_back(t2 * b - h - rho * (t * a + f));
+        }
+        MC.CheckFor(0, checks, P);
     }
-    MC.POpen(opened, masked, P);
-    typename T::clear t2 = t * t;
-    for (int i = 0; i < buffer_size; i++)
-    {
-        T& a = squares[i][0];
-        T& b = squares[i][1];
-        T& f = check_squares[i][0];
-        T& h = check_squares[i][1];
-        auto& rho = opened[i];
-        checks.push_back(t2 * b - h - rho * (t * a + f));
-    }
-    MC.CheckFor(0, checks, P);
 }
 
 template<class T>
@@ -200,43 +240,46 @@ void MaliciousBitOnlyRepPrep<T>::buffer_bits()
             this->buffer_size);
     assert(honest_proc);
     Player& P = honest_proc->P;
-    BufferScope scope(honest_prep, buffer_size);
+    /* karuta-voting M1: repeat with fresh (f, h) and a fresh t */
+    const int reps = sacrifice_repetitions<typename T::open_type>();
+    BufferScope scope(honest_prep, (1 + reps) * buffer_size);
     bits.clear();
     for (int i = 0; i < buffer_size; i++)
     {
-        T a, f, h;
+        T a;
         honest_prep.get_one(DATA_BIT, a);
-        honest_prep.get_two(DATA_SQUARE, f, h);
         bits.push_back(a);
-        check_squares.push_back({{f, h}});
-#ifdef DEBUG_BIT_SACRIFICE
-        typename T::MAC_Check MC;
-        if (not (MC.open(a, P).is_zero() or MC.open(a, P).is_one()))
+    }
+    for (int r = 0; r < reps; r++)
+    {
+        check_squares.clear();
+        masked.clear();
+        checks.clear();
+        for (int i = 0; i < buffer_size; i++)
         {
-            cout << MC.open(a, P) << endl;
-            throw exception();
+            T f, h;
+            honest_prep.get_two(DATA_SQUARE, f, h);
+            check_squares.push_back({{f, h}});
         }
-        assert(MC.open(f, P) * MC.open(f, P) == MC.open(h, P));
-#endif
+        auto t = Create_Random<typename T::open_type>(P);
+        for (int i = 0; i < buffer_size; i++)
+        {
+            T& a = bits[i];
+            T& f = check_squares[i][0];
+            masked.push_back(t * a - f);
+        }
+        MC.POpen(opened, masked, P);
+        typename T::open_type t2 = t * t;
+        for (int i = 0; i < buffer_size; i++)
+        {
+            T& a = bits[i];
+            T& f = check_squares[i][0];
+            T& h = check_squares[i][1];
+            auto& rho = opened[i];
+            checks.push_back(t2 * a - h - rho * (t * a + f));
+        }
+        MC.CheckFor(0, checks, P);
     }
-    auto t = Create_Random<typename T::open_type>(P);
-    for (int i = 0; i < buffer_size; i++)
-    {
-        T& a = bits[i];
-        T& f = check_squares[i][0];
-        masked.push_back(t * a - f);
-    }
-    MC.POpen(opened, masked, P);
-    typename T::open_type t2 = t * t;
-    for (int i = 0; i < buffer_size; i++)
-    {
-        T& a = bits[i];
-        T& f = check_squares[i][0];
-        T& h = check_squares[i][1];
-        auto& rho = opened[i];
-        checks.push_back(t2 * a - h - rho * (t * a + f));
-    }
-    MC.CheckFor(0, checks, P);
 }
 
 template<class T>
