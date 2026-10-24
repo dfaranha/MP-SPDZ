@@ -62,6 +62,13 @@ class octetStream
   // buffers for bit packing
   array<BitBuffer, 2> bits;
 
+  public:
+  /* karuta-voting M5: Receive throws, before allocating, if the peer
+   * announces more bytes than this (not copied with the stream) */
+  size_t max_receive = SIZE_MAX;
+
+  private:
+
   // keep private to avoid confusing conversion from integers
   octetStream(size_t maxlen);
 
@@ -518,6 +525,8 @@ inline void octetStream::Receive(T socket_num)
 {
   size_t nlen=0;
   receive(socket_num,nlen,LENGTH_SIZE);
+  if (nlen > max_receive)
+    throw runtime_error("message longer than expected");
   set_length(0);
   resize_min(nlen);
   set_length(nlen);
